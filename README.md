@@ -1,1 +1,1 @@
-# CV_Project
+# AI-Generated Image Detection
