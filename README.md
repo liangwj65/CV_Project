@@ -6,6 +6,7 @@
 
 ## 主要部分
 - 这个代码是用cursor融了两个库做的，不知道跑的时候还会有什么bug
+- weights/下面放两个模型的pth，一个是spai的spai.pth，另一个我用的是effort的‘The checkpoint of "CLIP-L14 + our Effort" training on GenImage (sdv1.4)’
 - 主要参数都堆在 `train.py` 130 行附近（batch、epoch、SVD 这些）。这里的learning rate没用，直接在 161行optimizer写
 - train直接 `python train.py`
 - `infer`、`test` 还没改。
