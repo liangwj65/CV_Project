@@ -16,6 +16,7 @@
 
 # 导出常用模块以便其他模块可以导入
 from . import data_utils
-from . import metrics
+#from . import metrics
 
-__all__ = ['data_utils', 'metrics']
+#__all__ = ['data_utils', 'metrics']
+__all__ = ['data_utils']

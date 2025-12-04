@@ -355,21 +355,15 @@ def test(
     global logger
     logger = create_logger(output_dir=config.OUTPUT, dist_rank=0, name=f"{config.MODEL.NAME}")
 
-    # Export current config.
+    # Export current config
     path = os.path.join(config.OUTPUT, "config.json")
     with open(path, "w") as f:
         f.write(config.dump())
     logger.info(f"Full config saved to {path}")
-    log_writer = SummaryWriter(log_dir=config.OUTPUT)
-    # print config
-    logger.info(config.dump())
 
-    neptune_tags: list[str] = ["mfm", "test"]
-    neptune_tags.extend([p.stem for p in test_csv])
-    neptune_run = neptune.init_run(
-        name=config.TAG,
-        tags=neptune_tags
-    )
+    # 只用本地 TensorBoard
+    log_writer = SummaryWriter(log_dir=config.OUTPUT)
+    logger.info(config.dump())
 
     test_datasets_names, test_datasets, test_loaders = build_loader_test(config, logger,
                                                                          split=split)
@@ -392,19 +386,20 @@ def test(
         checkpoint_epoch: int = load_pretrained(config, model, logger,
                                                 checkpoint_path=model_ckpt, verbose=i==0)
 
-        # Test the model.
+        # Test the model
         for test_data_loader, test_dataset, test_data_name in zip(test_loaders,
                                                                   test_datasets,
                                                                   test_datasets_names):
             predictions: Optional[dict[int, tuple[float, Optional[AttentionMask]]]] = None
             if update_csv:
                 acc, ap, auc, loss, predictions = validate(
-                    config, test_data_loader, model, criterion, neptune_run,
+                    config, test_data_loader, model, criterion, None,  # ← 传 None 关闭 Neptune
                     return_predictions=True
                 )
             else:
                 acc, ap, auc, loss = validate(config, test_data_loader,
-                                              model, criterion, neptune_run)
+                                              model, criterion, None)      # ← 传 None
+
             logger.info(f"Test | {test_data_name} | Epoch {checkpoint_epoch} | "
                         f"Images: {len(test_dataset)} | loss: {loss:.4f}")
             logger.info(f"Test | {test_data_name} | Epoch {checkpoint_epoch}  | "
@@ -413,10 +408,12 @@ def test(
                         f"Images: {len(test_dataset)} | AP: {ap:.3f}")
             logger.info(f"Test | {test_data_name} | Epoch {checkpoint_epoch}  | "
                         f"Images: {len(test_dataset)} | AUC: {auc:.3f}")
-            neptune_run[f"test/{test_data_name}/acc"].append(acc, step=checkpoint_epoch)
-            neptune_run[f"test/{test_data_name}/ap"].append(ap, step=checkpoint_epoch)
-            neptune_run[f"test/{test_data_name}/auc"].append(auc, step=checkpoint_epoch)
-            neptune_run[f"test/{test_data_name}/loss"].append(loss, step=checkpoint_epoch)
+
+            # 只写本地 TensorBoard
+            log_writer.add_scalar(f"test/{test_data_name}/acc", acc, checkpoint_epoch)
+            log_writer.add_scalar(f"test/{test_data_name}/ap",  ap,  checkpoint_epoch)
+            log_writer.add_scalar(f"test/{test_data_name}/auc", auc, checkpoint_epoch)
+            log_writer.add_scalar(f"test/{test_data_name}/loss", loss, checkpoint_epoch)
 
             if predictions is not None:
                 column_name: str = f"{tag}_epoch_{checkpoint_epoch}"
@@ -432,10 +429,11 @@ def test(
                         f"{column_name}_mask", attention_masks, export_dir=Path(config.OUTPUT)
                     )
 
-        if log_writer is not None:
-            log_writer.flush()
-        if neptune_run is not None:
-            neptune_run.sync()
+        log_writer.flush()
+
+    log_writer.close()
+    logger.info(f"All testing finished! Results saved in: {config.OUTPUT}")
+    logger.info(f"Open TensorBoard with: tensorboard --logdir {config.OUTPUT}")
 
 
 @cli.command()

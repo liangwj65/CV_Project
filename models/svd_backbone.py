@@ -68,6 +68,7 @@ class SVDResidualLinear(nn.Module):
         dtype = self.weight_main.dtype  # 原始 dtype（通常是 half）
 
         if self.S_residual is not None:
+            # 强制把残差三个矩阵搬到正确设备和类型（防炸核心！）
             U = self.U_residual.to(device=device, dtype=dtype)
             S = self.S_residual.to(device=device, dtype=dtype)
             V = self.V_residual.to(device=device, dtype=dtype)

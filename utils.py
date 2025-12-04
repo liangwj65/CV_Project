@@ -1,15 +1,9 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 Centre for Research and Technology Hellas
-# and University of Amsterdam. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
 
-"""
-工具函数模块
-"""
-
-import sys
-from pathlib import Path
 import logging
-from typing import Optional
+import time
+from pathlib import Path
+from typing import Optional, Dict, Tuple
+
 import torch
 import numpy as np
 from timm.utils import AverageMeter
@@ -17,6 +11,7 @@ from matplotlib import colormaps
 from PIL import Image
 
 from fusion import metrics
+from models.sid import AttentionMask
 
 
 def create_logger(name="fusion"):
@@ -34,31 +29,33 @@ def create_logger(name="fusion"):
 
 
 @torch.no_grad()
-def validate(model, data_loader, criterion, device="cuda", logger=None, config=None):
+def validate(
+    config,
+    data_loader,
+    model,
+    criterion,
+    logger: Optional[logging.Logger] = None,
+    neptune_run=None,
+    verbose: bool = True,
+    return_predictions: bool = False
+) -> Tuple[float, float, float, float, Optional[Dict[int, Tuple[float, Optional[AttentionMask]]]]]:
     """
-    验证函数
-    
-    Args:
-        model: 模型
-        data_loader: 数据加载器
-        criterion: 损失函数
-        device: 设备
-        logger: 日志记录器
-        config: 配置对象（可选）
-    
-    Returns:
-        acc, ap, auc, loss_avg
+    与SPAI保持一致的验证流程，可返回预测得分及注意力热力图路径。
     """
+    del neptune_run  # 占位，保持接口一致
+
     model.eval()
     criterion.eval()
 
+    batch_time = AverageMeter()
     loss_meter = AverageMeter()
-    cls_metrics = metrics.Metrics(metrics=("auc", "ap", "accuracy"))
+    cls_metrics: metrics.Metrics = metrics.Metrics(metrics=("auc", "ap", "accuracy"))
 
-    feature_extraction_batch = None
-    if config is not None and hasattr(config, 'MODEL') and hasattr(config.MODEL, 'FEATURE_EXTRACTION_BATCH'):
-        feature_extraction_batch = config.MODEL.FEATURE_EXTRACTION_BATCH
+    predicted_scores: Dict[int, Tuple[float, Optional[AttentionMask]]] = {}
+    feature_extraction_batch = getattr(config.MODEL, "FEATURE_EXTRACTION_BATCH", None)
+    device = next(model.parameters()).device
 
+    end = time.time()
     for idx, (images, target, dataset_idx) in enumerate(data_loader):
         if isinstance(images, list):
             images = [img.to(device, non_blocking=True) for img in images]
@@ -67,34 +64,71 @@ def validate(model, data_loader, criterion, device="cuda", logger=None, config=N
             images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
-        # 前向传播
-        if isinstance(images, list):
+        # 处理不同输入形态
+        if isinstance(images, list) and getattr(config.TEST, "EXPORT_IMAGE_PATCHES", False):
+            export_dirs = []
+            base_export_dir = Path(config.OUTPUT) / "images"
+            base_export_dir.mkdir(parents=True, exist_ok=True)
+            for sample_idx in dataset_idx.detach().cpu().tolist():
+                sample_dir = base_export_dir / f"{sample_idx}"
+                sample_dir.mkdir(parents=True, exist_ok=True)
+                export_dirs.append(sample_dir)
+            output, attention_masks = model(images, feature_extraction_batch, export_dirs)
+        elif isinstance(images, list):
             output = model(images, feature_extraction_batch)
+            attention_masks = [None] * len(images)
         else:
             if images.size(dim=1) > 1:
-                predictions = [model(images[:, i]) for i in range(images.size(dim=1))]
-                predictions = torch.stack(predictions, dim=1)
-                output = predictions.mean(dim=1)
+                predictions_batch = [model(images[:, i]) for i in range(images.size(dim=1))]
+                predictions_batch = torch.stack(predictions_batch, dim=1)
+                reduction = getattr(config.TEST, "VIEWS_REDUCTION_APPROACH", "mean")
+                if reduction == "max":
+                    output = predictions_batch.max(dim=1).values
+                elif reduction == "mean":
+                    output = predictions_batch.mean(dim=1)
+                else:
+                    raise TypeError(f"{reduction} is not a supported views reduction approach")
             else:
                 images = images.squeeze(dim=1)
                 output = model(images)
+            attention_masks = [None] * output.size(0)
 
         loss = criterion(output.squeeze(dim=1), target)
         output = torch.sigmoid(output)
 
-        # 更新指标
         loss_meter.update(loss.item(), target.size(0))
-        cls_metrics.update(output[:, 0].cpu(), target.cpu())
+        cls_metrics.update(output[:, 0].detach().cpu(), target.detach().cpu())
+
+        if return_predictions:
+            batch_predictions = output.squeeze(dim=1).detach().cpu().tolist()
+            batch_dataset_idx = dataset_idx.detach().cpu().tolist()
+            for i, pred, mask in zip(batch_dataset_idx, batch_predictions, attention_masks):
+                predicted_scores[i] = (pred, mask)
+
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        if verbose and idx % max(1, config.PRINT_FREQ) == 0:
+            if torch.cuda.is_available():
+                memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
+            else:
+                memory_used = 0.0
+            if logger:
+                logger.info(
+                    f'Test: [{idx}/{len(data_loader)}] | '
+                    f'Time {batch_time.val:.3f} ({batch_time.avg:.3f}) | '
+                    f'Loss {loss_meter.val:.4f} ({loss_meter.avg:.4f}) | '
+                    f'Mem {memory_used:.0f}MB'
+                )
 
     metric_values = cls_metrics.compute()
     auc = metric_values["auc"].item()
     ap = metric_values["ap"].item()
     acc = metric_values["accuracy"].item()
 
-    if logger:
-        logger.info(f"Validation - Loss: {loss_meter.avg:.4f}, ACC: {acc:.3f}, AP: {ap:.3f}, AUC: {auc:.3f}")
-
-    return acc, ap, auc, loss_meter.avg
+    if return_predictions:
+        return acc, ap, auc, loss_meter.avg, predicted_scores
+    return acc, ap, auc, loss_meter.avg, None
 
 
 def save_image_with_attention_overlay(

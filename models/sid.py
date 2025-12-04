@@ -33,7 +33,7 @@ from . import filters
 from . import utils
 from . import backbones
 from .svd_backbone import CLIPBackboneWithSVD, CLIP_MEAN, CLIP_STD
-from fusion.utils import save_image_with_attention_overlay
+from spai.spai.utils import save_image_with_attention_overlay
 
 
 class PatchBasedMFViT(nn.Module):

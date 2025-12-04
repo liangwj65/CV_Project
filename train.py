@@ -1,10 +1,3 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 Centre for Research and Technology Hellas
-# and University of Amsterdam. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
-"""
-训练脚本 - SPAI + Effort SVD融合模型
-"""
 
 import os
 import sys
@@ -135,17 +128,17 @@ def main():
     
     # 训练参数
     batch_size = 72
-    num_epochs = 10
+    num_epochs = 70
     learning_rate = 5e-7
     weight_decay = 0.05
     max_grad_norm = 1.0
     save_dir = fusion_dir / "output" / "fusion"
     save_dir.mkdir(parents=True, exist_ok=True)
     save_dir = str(save_dir)
-    save_freq = 1  # 每N个epoch保存一次
+    save_freq = 10  # 每N个epoch保存一次
     
     # 数据路径（优先使用fusion目录下的，否则使用项目根目录下的）
-    train_csv = fusion_dir / "data" / "train.csv"
+    train_csv = fusion_dir / "data" / "train_glide.csv"
     if not train_csv.exists():
         train_csv = project_root / "data" / "train.csv"
     train_csv = str(train_csv)
@@ -267,7 +260,7 @@ def main():
     )
 
     total_steps = len(train_loader) * num_epochs
-    warmup_steps = 500
+    warmup_steps = 200
 
     scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer,
@@ -284,7 +277,7 @@ def main():
     logger.info("Starting training...")
     best_acc = 0.0
     global_step = 0  # 全局step计数器
-    
+    val_frequency = 10
     for epoch in range(1, num_epochs + 1):
         logger.info(f"\nEpoch [{epoch}/{num_epochs}]")
         
@@ -292,11 +285,19 @@ def main():
         train_loss, global_step = train_one_epoch(
             model, train_loader, criterion, optimizer, scheduler, epoch, device, logger, writer, global_step, config
         )
-
-        
         # 验证
-        if val_loader is not None:
-            acc, ap, auc, val_loss = validate(model, val_loader, criterion, device, logger, config)
+        if val_loader is not None and epoch % val_frequency == 0:
+            acc, ap, auc, val_loss, _ = validate(
+                config,
+                val_loader,
+                model,
+                criterion,
+                logger=logger,
+                neptune_run=None,
+                verbose=True,
+                return_predictions=False
+            )
+            logger.info(f"acc = {acc}, ap = {ap}, auc = {auc}, val_loss = {val_loss}")
             writer.add_scalar('Val/Loss', val_loss, epoch)
             writer.add_scalar('Val/ACC', acc, epoch)
             writer.add_scalar('Val/AP', ap, epoch)
